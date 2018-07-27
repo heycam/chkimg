@@ -2,5 +2,8 @@
 name = "chkimg"
 version = "0.1.0"
 authors = ["Cameron McCormack <cam@mcc.id.au>"]
+description = "Check a minidump file against binaries from a symbol server for memory corruption"
 
 [dependencies]
+clap = "2.32.0"
+minidump = "0.1.0"

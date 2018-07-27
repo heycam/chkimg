@@ -1,0 +1,6 @@
+[package]
+name = "chkimg"
+version = "0.1.0"
+authors = ["Cameron McCormack <cam@mcc.id.au>"]
+
+[dependencies]

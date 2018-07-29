@@ -2,14 +2,18 @@
 extern crate clap;
 extern crate minidump;
 
+mod symbol_cache;
+
 use clap::{App, Arg};
 use minidump::{Minidump, MinidumpMemory, MinidumpMemoryList, MinidumpModule};
 use minidump::{MinidumpModuleList, Module};
 use std::fmt::{self, Display, Formatter};
+use symbol_cache::SymbolCache;
 
 #[derive(Debug)]
 enum Error {
     MinidumpReadFailure(minidump::Error),
+    SymbolCacheFailure(symbol_cache::Error),
 }
 
 impl From<minidump::Error> for Error {
@@ -18,11 +22,20 @@ impl From<minidump::Error> for Error {
     }
 }
 
+impl From<symbol_cache::Error> for Error {
+    fn from(e: symbol_cache::Error) -> Error {
+        Error::SymbolCacheFailure(e)
+    }
+}
+
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             Error::MinidumpReadFailure(ref e) => {
                 write!(f, "minidump read failure: {:?}", e)
+            }
+            Error::SymbolCacheFailure(ref e) => {
+                write!(f, "symbol cache failure: {}", e)
             }
         }
     }
@@ -147,6 +160,26 @@ fn run(minidump_filename: &str) -> Result<(), Error> {
     if intersections.is_empty() {
         println!("no memory ranges to check");
         return Ok(());
+    }
+
+    let urls = vec!["https://symbols.mozilla.org/"];
+    let sym_cache = SymbolCache::new(Some("/tmp/symcache"), &urls);
+
+    for intersection in intersections {
+        let file = intersection.module.code_file();
+        let file = file.split("\\").last().unwrap();
+        let code_file = sym_cache.load_code_file(
+            &*file,
+            &*intersection.module.code_identifier(),
+        );
+
+        let code_file = match code_file {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("warning: {}: {}", file, e);
+                continue;
+            }
+        };
     }
 
     Ok(())

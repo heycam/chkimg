@@ -5,10 +5,22 @@ files](https://docs.microsoft.com/en-us/windows/desktop/Debug/minidump-files)
 for memory corruption, fashioned after
 [windbg's `!chkimg` command](https://docs.microsoft.com/en-us/windows-hardware/drivers/debugger/-chkimg).
 
+## Installation instructions
+
+First, ensure you have [Rust installed](https://rustup.rs/).  Then, from some
+directory you can write to:
+
+```
+$ git clone https://github.com/heycam/chkimg
+...
+$ cd chkimg
+$ cargo install
+```
+
 ## Usage
 
 ```
-$ ./chkimg --help
+$ chkimg --help
 USAGE:
     chkimg [OPTIONS] <MINIDUMP>
 
@@ -27,7 +39,7 @@ ARGS:
 For example:
 
 ```
-$ ./chkimg --symbol-cache=/tmp/symcache \
+$ chkimg --symbol-cache=/tmp/symcache \
 > --symbol-server=https://msdl.microsoft.com/download/symbols \
 > --symbol-server=https://symbols.mozilla.org/ \
 > /tmp/some-minidump-file.dmp

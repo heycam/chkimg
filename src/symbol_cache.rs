@@ -1,3 +1,4 @@
+extern crate cab;
 extern crate reqwest;
 
 use self::reqwest::StatusCode;
@@ -5,7 +6,7 @@ use std::fmt::{self, Display, Formatter};
 use std::fs::{DirBuilder, File};
 use std::path::PathBuf;
 use std::result;
-use std::io::{self, Read, Write};
+use std::io::{self, Cursor, Read, Write};
 
 pub struct SymbolCache<'a> {
     path: Option<PathBuf>,
@@ -15,6 +16,8 @@ pub struct SymbolCache<'a> {
 #[derive(Debug)]
 pub enum Error {
     LoadFailure(io::Error),
+    NetworkFailure(reqwest::Error),
+    DecompressionFailure(io::Error),
     NotFound,
     EmptyURL,
 }
@@ -23,7 +26,13 @@ impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             Error::LoadFailure(ref e) => {
-                write!(f, "symbol cache load failure: {:?}", e)
+                write!(f, "symbol cache load failure: {}", e)
+            }
+            Error::NetworkFailure(ref e) => {
+                write!(f, "symbol server load failure: {}", e)
+            }
+            Error::DecompressionFailure(ref e) => {
+                write!(f, "decompression failure: {}", e)
             }
             Error::NotFound => {
                 write!(f, "not found")
@@ -95,6 +104,8 @@ impl<'a> SymbolCache<'a> {
                 }
                 Ok(()) => {}
             }
+
+            return Ok(f);
         }
 
         Err(Error::NotFound)
@@ -151,9 +162,9 @@ impl<'a> SymbolCache<'a> {
         code_file: &str,
         code_identifier: &str,
         url: &str,
-    ) -> reqwest::Result<Option<CodeFile>> {
+    ) -> Result<Option<CodeFile>> {
 
-        println!("Looking for {} at {}...", code_file, url);
+        eprintln!("info: looking for {} at {}...", code_file, url);
 
         let client = reqwest::Client::new();
 
@@ -169,17 +180,69 @@ impl<'a> SymbolCache<'a> {
         let mut uncompressed_url = base_url.clone();
         uncompressed_url.push_str(code_file);
 
-        let response = client.head(&uncompressed_url).send()?;
+        let response = client
+            .head(&uncompressed_url)
+            .send()
+            .map_err(Error::NetworkFailure)?;
+
+         match response.status() {
+            StatusCode::Ok => {
+                eprintln!("info: fetching {} from {}...", code_file, url);
+                let mut buffer = vec![];
+                return client
+                    .get(&uncompressed_url)
+                    .send()
+                    .and_then(|mut response| response.copy_to(&mut buffer))
+                    .map(|_| {
+                        Some(CodeFile {
+                            data: buffer.into_boxed_slice(),
+                        })
+                    })
+                    .map_err(Error::NetworkFailure)
+            }
+            _ => {}
+        }
+
+        let mut compressed_url = base_url.clone();
+        let mut compressed_code_file = String::from(code_file);
+        compressed_code_file.pop();
+        compressed_code_file.push('_');
+        compressed_url.push_str(&compressed_code_file);
+
+        let response = client
+            .head(&compressed_url)
+            .send()
+            .map_err(Error::NetworkFailure)?;
+
         match response.status() {
             StatusCode::Ok => {
-                println!("Fetching {} from {}...", code_file, url);
+                eprintln!("info: fetching {} from {}...", compressed_code_file, url);
+                let mut compressed_buffer = vec![];
                 let mut buffer = vec![];
-                client.get(&uncompressed_url)
-                    .send()?
-                    .copy_to(&mut buffer)?;
-                return Ok(Some(CodeFile {
-                    data: buffer.into_boxed_slice(),
-                }));
+                let result = client
+                    .get(&compressed_url)
+                    .send()
+                    .and_then(|mut response| {
+                        response.copy_to(&mut compressed_buffer)
+                    })
+                    .map_err(Error::NetworkFailure);
+                if result.is_err() {
+                    return Err(result.err().unwrap());
+                }
+                return cab::Cabinet::new(Cursor::new(&*compressed_buffer))
+                    .and_then(|mut cabinet| {
+                        cabinet
+                            .read_file(code_file)
+                            .and_then(|mut reader| {
+                                io::copy(&mut reader, &mut buffer)
+                            })
+                    })
+                    .map(|_| {
+                        Some(CodeFile {
+                            data: buffer.into_boxed_slice(),
+                        })
+                    })
+                    .map_err(Error::DecompressionFailure);
             }
             _ => {}
         }

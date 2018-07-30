@@ -2,6 +2,8 @@
 name = "chkimg"
 version = "0.1.0"
 authors = ["Cameron McCormack <cam@mcc.id.au>"]
+license = "MPL-2.0"
+repository = "https://github.com/heycam/chkimg"
 description = "Check a minidump file against binaries from a symbol server for memory corruption"
 
 [dependencies]

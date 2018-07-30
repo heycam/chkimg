@@ -6,8 +6,8 @@ extern crate pe;
 mod symbol_cache;
 
 use clap::{App, Arg};
-use minidump::{Minidump, MinidumpMemory, MinidumpMemoryList, MinidumpModule};
-use minidump::{MinidumpModuleList, Module};
+use minidump::{Minidump, MinidumpException, MinidumpMemory, MinidumpMemoryList};
+use minidump::{MinidumpModule, MinidumpModuleList, MinidumpRawContext, Module};
 use pe::{Pe, RVA};
 use std::fmt::{self, Display, Formatter};
 use std::mem;
@@ -191,6 +191,19 @@ fn make_rva(addr: u64) -> RVA<[u8]> {
 fn run(minidump_filename: &str) -> Result<(), Error> {
     // Read the minidump file.
     let mut dump = Minidump::read_path(minidump_filename)?;
+
+    // Print crashing IP.
+    let exception: MinidumpException = dump.get_stream()?;
+    if let Some(context) = exception.context {
+        let ip = match context.raw {
+            MinidumpRawContext::X86(ctx) => Some(ctx.eip as u64),
+            MinidumpRawContext::AMD64(ctx) => Some(ctx.rip),
+            _ => None,
+        };
+        if let Some(ip) = ip {
+            println!("Crashing IP: 0x{:08x}", ip);
+        }
+    }
 
     // Get the memory regions and loaded modules.
     let memory_list: MinidumpMemoryList = dump.get_stream()?;

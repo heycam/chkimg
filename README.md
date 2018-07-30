@@ -54,3 +54,8 @@ mismatch: 0x64a4175a .. 0x64a4175a (1 byte) in xul.dll
 mismatch: 0x64a418e2 .. 0x64a418e3 (2 bytes) in xul.dll
   [ a7 64 ] should be [ 49 10 ]
 ```
+
+## Issues
+
+* Probably doesn’t support minidumps from any platform other than Windows.
+* Doesn’t support some symbol server features, like <code>file.ptr</code> files.

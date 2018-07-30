@@ -164,13 +164,14 @@ fn find_intersections<'a, 'b>(
     intersections
 }
 
-struct Mismatch<'a, 'b> {
-    actual: &'a [u8],
-    expected: &'b [u8],
+struct Mismatch {
+    actual: Vec<u8>,
+    expected: Vec<u8>,
     offset: u64,
+    file: String,
 }
 
-impl<'a, 'b> Mismatch<'a, 'b> {
+impl Mismatch {
     fn len(&self) -> u32 {
         assert!(self.actual.len() == self.expected.len());
         assert!(self.actual.len() <= 0xffffffff);
@@ -200,19 +201,6 @@ fn run(
     // Read the minidump file.
     let mut dump = Minidump::read_path(minidump_filename)?;
 
-    // Print crashing IP.
-    let exception: MinidumpException = dump.get_stream()?;
-    if let Some(context) = exception.context {
-        let ip = match context.raw {
-            MinidumpRawContext::X86(ctx) => Some(ctx.eip as u64),
-            MinidumpRawContext::AMD64(ctx) => Some(ctx.rip),
-            _ => None,
-        };
-        if let Some(ip) = ip {
-            println!("Crashing IP: 0x{:08x}", ip);
-        }
-    }
-
     if symbol_cache.is_none() && symbol_servers.is_empty() {
         return Err(Error::NoSymbolSource);
     }
@@ -234,7 +222,7 @@ fn run(
         return Ok(());
     }
 
-    let mut found_errors = false;
+    let mut errors: Vec<Mismatch> = vec![];
 
     let sym_cache = SymbolCache::new(symbol_cache, symbol_servers);
 
@@ -276,7 +264,6 @@ fn run(
         let code_file_bytes = pe.ref_slice_at(rva, len).unwrap();
 
         // Compare the bytes to find spans of mismatches.
-        let mut errors: Vec<Mismatch> = vec![];
         for (i, (a, b)) in memory_bytes
             .iter()
             .zip(code_file_bytes.iter())
@@ -290,56 +277,57 @@ fn run(
                     .unwrap_or(false)
                 {
                     let error = errors.last_mut().unwrap();
-                    let len = error.len() as usize;
-                    error.actual = &memory_bytes[i - len .. i + 1];
-                    error.expected = &code_file_bytes[i - len .. i + 1];
+                    error.actual.push(*a);
+                    error.expected.push(*b);
                 } else {
                     errors.push(Mismatch {
-                        actual: &memory_bytes[i .. i + 1],
-                        expected: &code_file_bytes[i .. i + 1],
+                        actual: vec![*a],
+                        expected: vec![*b],
                         offset,
+                        file: file.into(),
                     });
                 }
             }
         }
+    }
 
-        if errors.is_empty() {
-            continue;
-        }
-        found_errors = true;
-
-        // Print out the errors.
-        let error_count = errors.iter().map(|e| e.len()).fold(0, |sum, i| sum + i);
-
-        println!(
-            "{} mismatching byte{} found in {}",
-            error_count,
-            if error_count == 1 { "" } else { "s" },
-            file
-        );
-
-        for error in errors {
-            println!(
-                "  0x{:08x} .. 0x{:08x} ({} byte{})",
-                error.offset,
-                error.span().end(),
-                error.len(),
-                if error.len() == 1 { "" } else { "s" },
-            );
-            print!("    [");
-            for b in error.actual {
-                print!(" {:02x}", b);
-            }
-            print!(" ] should be [");
-            for b in error.expected {
-                print!(" {:02x}", b);
-            }
-            println!(" ]");
+    // Print crashing IP.
+    let exception: MinidumpException = dump.get_stream()?;
+    if let Some(context) = exception.context {
+        let ip = match context.raw {
+            MinidumpRawContext::X86(ctx) => Some(ctx.eip as u64),
+            MinidumpRawContext::AMD64(ctx) => Some(ctx.rip),
+            _ => None,
+        };
+        if let Some(ip) = ip {
+            println!("crashing IP: 0x{:08x}", ip);
         }
     }
 
-    if !found_errors {
+    if errors.is_empty() {
         println!("no errors found");
+        return Ok(());
+    }
+
+    // Print out the errors.
+    for error in errors {
+        println!(
+            "mismatch: 0x{:08x} .. 0x{:08x} ({} byte{}) in {}",
+            error.offset,
+            error.span().end() - 1,
+            error.len(),
+            if error.len() == 1 { "" } else { "s" },
+            error.file,
+        );
+        print!("  [");
+        for b in error.actual {
+            print!(" {:02x}", b);
+        }
+        print!(" ] should be [");
+        for b in error.expected {
+            print!(" {:02x}", b);
+        }
+        println!(" ]");
     }
 
     Ok(())

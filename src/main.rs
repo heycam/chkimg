@@ -18,6 +18,7 @@ enum Error {
     MinidumpReadFailure(minidump::Error),
     SymbolCacheFailure(symbol_cache::Error),
     PeFailure(pe::Error),
+    NoSymbolSource,
 }
 
 impl From<minidump::Error> for Error {
@@ -49,6 +50,9 @@ impl Display for Error {
             }
             Error::PeFailure(ref e) => {
                 write!(f, "PE failure: {:?}", e)
+            }
+            Error::NoSymbolSource => {
+                write!(f, "no symbol server or symbol cache specified")
             }
         }
     }
@@ -188,7 +192,11 @@ fn make_rva(addr: u64) -> RVA<[u8]> {
     unsafe { mem::transmute(addr as u32) }
 }
 
-fn run(minidump_filename: &str) -> Result<(), Error> {
+fn run(
+    minidump_filename: &str,
+    symbol_cache: Option<&str>,
+    symbol_servers: &[&str],
+) -> Result<(), Error> {
     // Read the minidump file.
     let mut dump = Minidump::read_path(minidump_filename)?;
 
@@ -203,6 +211,10 @@ fn run(minidump_filename: &str) -> Result<(), Error> {
         if let Some(ip) = ip {
             println!("Crashing IP: 0x{:08x}", ip);
         }
+    }
+
+    if symbol_cache.is_none() && symbol_servers.is_empty() {
+        return Err(Error::NoSymbolSource);
     }
 
     // Get the memory regions and loaded modules.
@@ -224,8 +236,7 @@ fn run(minidump_filename: &str) -> Result<(), Error> {
 
     let mut found_errors = false;
 
-    let urls = vec!["https://symbols.mozilla.org/"];
-    let sym_cache = SymbolCache::new(Some("/tmp/symcache"), &urls);
+    let sym_cache = SymbolCache::new(symbol_cache, symbol_servers);
 
     // Go over each intersecting memory range and compare bytes from the
     // minidump with bytes from the original image.
@@ -339,16 +350,35 @@ fn main() {
         .version(crate_version!())
         .about(crate_description!())
         .arg(
+            Arg::with_name("symbol-cache")
+                .help("directory to cache files downloaded from symbol servers")
+                .takes_value(true)
+                .long("symbol-cache")
+        )
+        .arg(
+            Arg::with_name("symbol-server")
+                .help("URL of symbol server to download binaries from")
+                .takes_value(true)
+                .multiple(true)
+                .long("symbol-server")
+        )
+        .arg(
             Arg::with_name("MINIDUMP")
-                .help("Specifies the input minidump file")
+                .help("specifies the input minidump file")
                 .index(1)
                 .required(true)
         )
         .get_matches();
 
     let minidump_filename = matches.value_of("MINIDUMP").unwrap();
+    let symbol_cache = matches.value_of("symbol-cache");
+    let symbol_servers = matches
+        .values_of("symbol-server")
+        .map_or(vec![], |values| {
+            values.collect()
+        });
 
-    if let Err(e) = run(minidump_filename) {
+    if let Err(e) = run(minidump_filename, symbol_cache, &symbol_servers) {
         eprintln!("{}", e);
     }
 }

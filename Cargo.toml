@@ -7,3 +7,4 @@ description = "Check a minidump file against binaries from a symbol server for m
 [dependencies]
 clap = "2.32.0"
 minidump = "0.1.0"
+pe = "0.1.1"

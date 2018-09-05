@@ -215,6 +215,7 @@ fn run(
     minidump_filename: &str,
     symbol_cache: Option<&str>,
     symbol_servers: &[&str],
+    skip_modules: &[&str],
 ) -> Result<(), Error> {
     // Read the minidump file.
     let mut dump = Minidump::read_path(minidump_filename)?;
@@ -265,6 +266,11 @@ fn run(
         let file = intersection.module.code_file();
         let file = file.split("\\").last().unwrap();
         let code_identifier = &*intersection.module.code_identifier();
+
+        // Skip this module if we're told to.
+        if skip_modules.contains(&file) {
+            continue;
+        }
 
         // If we tried to load the same binary last time and failed, just skip
         // it silently.
@@ -375,6 +381,13 @@ fn main() {
                 .long("symbol-server")
         )
         .arg(
+            Arg::with_name("skip-module")
+                .help("name of a module to skip checking, e.g. \"ntdll.dll\"")
+                .takes_value(true)
+                .multiple(true)
+                .long("skip-module")
+        )
+        .arg(
             Arg::with_name("MINIDUMP")
                 .help("specifies the input minidump file")
                 .index(1)
@@ -389,8 +402,13 @@ fn main() {
         .map_or(vec![], |values| {
             values.collect()
         });
+    let skip = matches
+        .values_of("skip-module")
+        .map_or(vec![], |values| {
+            values.collect()
+        });
 
-    if let Err(e) = run(minidump_filename, symbol_cache, &symbol_servers) {
+    if let Err(e) = run(minidump_filename, symbol_cache, &symbol_servers, &skip) {
         eprintln!("{}", e);
     }
 }

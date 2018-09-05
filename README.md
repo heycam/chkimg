@@ -29,6 +29,7 @@ FLAGS:
     -V, --version    Prints version information
 
 OPTIONS:
+        --skip-module <skip-module>...        name of a module to skip checking, e.g. "ntdll.dll"
         --symbol-cache <symbol-cache>         directory to cache files downloaded from symbol servers
         --symbol-server <symbol-server>...    URL of symbol server to download binaries from
 

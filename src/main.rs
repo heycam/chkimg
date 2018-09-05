@@ -9,6 +9,8 @@ use clap::{App, Arg};
 use minidump::{Minidump, MinidumpException, MinidumpMemory, MinidumpMemoryList};
 use minidump::{MinidumpModule, MinidumpModuleList, MinidumpRawContext, Module};
 use pe::{Pe, RVA};
+use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fmt::{self, Display, Formatter};
 use std::mem;
 use symbol_cache::SymbolCache;
@@ -193,6 +195,22 @@ fn make_rva(addr: u64) -> RVA<[u8]> {
     unsafe { mem::transmute(addr as u32) }
 }
 
+/// Pair of file name and code identifier.
+#[derive(Eq, Hash, PartialEq)]
+struct LoadKey<'a>(Cow<'a, str>, Cow<'a, str>);
+
+impl<'a> LoadKey<'a> {
+    fn owned(file: &str, code_identifier: &str) -> LoadKey<'a> {
+        let file = Cow::Owned(String::from(file));
+        let code_identifier = Cow::Owned(String::from(code_identifier));
+        LoadKey(file, code_identifier)
+    }
+
+    fn borrowed(file: &'a str, code_identifier: &'a str) -> LoadKey<'a> {
+        LoadKey(Cow::Borrowed(file), Cow::Borrowed(code_identifier))
+    }
+}
+
 fn run(
     minidump_filename: &str,
     symbol_cache: Option<&str>,
@@ -225,6 +243,7 @@ fn run(
     let mut errors: Vec<Mismatch> = vec![];
 
     let sym_cache = SymbolCache::new(symbol_cache, symbol_servers);
+    let mut failed_loads: HashSet<LoadKey> = HashSet::new();
 
     // Go over each intersecting memory range and compare bytes from the
     // minidump with bytes from the original image.
@@ -245,15 +264,20 @@ fn run(
         // Load the binary from the symbol server.
         let file = intersection.module.code_file();
         let file = file.split("\\").last().unwrap();
-        let code_file = sym_cache.load_code_file(
-            &*file,
-            &*intersection.module.code_identifier(),
-        );
+        let code_identifier = &*intersection.module.code_identifier();
 
+        // If we tried to load the same binary last time and failed, just skip
+        // it silently.
+        if failed_loads.contains(&LoadKey::borrowed(file, code_identifier)) {
+            continue;
+        }
+
+        let code_file = sym_cache.load_code_file(file, code_identifier);
         let code_file = match code_file {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("warning: {}: {}", file, e);
+                failed_loads.insert(LoadKey::owned(file, code_identifier));
                 continue;
             }
         };

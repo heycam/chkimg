@@ -7,7 +7,7 @@ mod symbol_cache;
 
 use clap::{App, Arg};
 use minidump::{Minidump, MinidumpException, MinidumpMemory, MinidumpMemoryList};
-use minidump::{MinidumpModule, MinidumpModuleList, MinidumpRawContext, Module};
+use minidump::{MinidumpModule, MinidumpModuleList, Module};
 use pe::{Pe, RVA};
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -323,15 +323,8 @@ fn run(
 
     // Print crashing IP.
     let exception: MinidumpException = dump.get_stream()?;
-    if let Some(context) = exception.context {
-        let ip = match context.raw {
-            MinidumpRawContext::X86(ctx) => Some(ctx.eip as u64),
-            MinidumpRawContext::AMD64(ctx) => Some(ctx.rip),
-            _ => None,
-        };
-        if let Some(ip) = ip {
-            println!("crashing IP: 0x{:08x}", ip);
-        }
+    if let Some(c) = exception.context {
+        println!("crashing IP: 0x{:08x}", c.get_instruction_pointer());
     }
 
     if errors.is_empty() {

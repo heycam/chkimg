@@ -8,7 +8,7 @@ mod symbol_cache;
 use clap::{App, Arg};
 use minidump::{Minidump, MinidumpException, MinidumpMemory, MinidumpMemoryList};
 use minidump::{MinidumpModule, MinidumpModuleList, Module};
-use pe::{Pe, RVA};
+use pe::{AsOsStr, Pe, RVA};
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt::{self, Display, Formatter};
@@ -21,6 +21,7 @@ enum Error {
     SymbolCacheFailure(symbol_cache::Error),
     PeFailure(pe::Error),
     NoSymbolSource,
+    UnsupportedRelocation(u16),
 }
 
 impl From<minidump::Error> for Error {
@@ -56,6 +57,9 @@ impl Display for Error {
             Error::NoSymbolSource => {
                 write!(f, "no symbol server or symbol cache specified")
             }
+            Error::UnsupportedRelocation(t) => {
+                write!(f, "Unsupported PE relocation type {}", t)
+            }
         }
     }
 }
@@ -67,6 +71,13 @@ struct Span {
 }
 
 impl Span {
+    fn new(offset: u64, len: u32) -> Span {
+        Span {
+            offset,
+            len,
+        }
+    }
+
     fn end(&self) -> u64 {
         self.offset + self.len as u64
     }
@@ -83,12 +94,13 @@ impl Span {
             if len > 0xffffffff {
                 None
             } else {
-                Some(Span {
-                    offset: other.offset,
-                    len: len as u32,
-                })
+                Some(Span::new(other.offset, len as u32))
             }
         }
+    }
+
+    fn intersects(&self, other: Span) -> bool {
+        self.intersect(other).is_some()
     }
 }
 
@@ -99,20 +111,14 @@ trait MemorySpan {
 impl MemorySpan for MinidumpMemory {
     fn span(&self) -> Span {
         assert!(self.size <= 0xffffffff);
-        Span {
-            offset: self.base_address,
-            len: self.size as u32,
-        }
+        Span::new(self.base_address, self.size as u32)
     }
 }
 
 impl MemorySpan for MinidumpModule {
     fn span(&self) -> Span {
         assert!(self.size() <= 0xffffffff);
-        Span {
-            offset: self.base_address(),
-            len: self.size() as u32,
-        }
+        Span::new(self.base_address(), self.size() as u32)
     }
 }
 
@@ -181,10 +187,7 @@ impl Mismatch {
     }
 
     fn span(&self) -> Span {
-        Span {
-            offset: self.offset,
-            len: self.len(),
-        }
+        Span::new(self.offset, self.len())
     }
 }
 
@@ -209,6 +212,131 @@ impl<'a> LoadKey<'a> {
     fn borrowed(file: &'a str, code_identifier: &'a str) -> LoadKey<'a> {
         LoadKey(Cow::Borrowed(file), Cow::Borrowed(code_identifier))
     }
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(u8)]
+enum RelocationType {
+    Absolute,
+    High,
+    Low,
+    HighLow,
+    Dir64,
+}
+
+impl RelocationType {
+    fn len(&self) -> u32 {
+        match self {
+            RelocationType::Absolute => 0,
+            RelocationType::High | RelocationType::Low => 2,
+            RelocationType::HighLow => 4,
+            RelocationType::Dir64 => 8,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Relocation {
+    rva: u32,
+    relocation_type: RelocationType,
+}
+
+impl fmt::Debug for Relocation {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Relocation(0x{:08x}, {:?})", self.rva, self.relocation_type)
+    }
+}
+
+impl Relocation {
+    fn span(&self) -> Span {
+        Span::new(self.rva as u64, self.relocation_type.len())
+    }
+}
+
+struct PeRead<'a>(&'a [u8]);
+
+impl<'a> PeRead<'a> {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn read_u8(&mut self) -> u8 {
+        let v = self.0[0];
+        self.0 = self.0.split_at(1).1;
+        v
+    }
+
+    fn read_u16(&mut self) -> u16 {
+        (self.read_u8() as u16) |
+        ((self.read_u8() as u16) << 8)
+    }
+
+    fn read_u32(&mut self) -> u32 {
+        (self.read_u8() as u32) |
+        ((self.read_u8() as u32) << 8) |
+        ((self.read_u8() as u32) << 16) |
+        ((self.read_u8() as u32) << 24)
+    }
+
+    fn read_block(&mut self, len: usize) -> PeRead {
+        let (head, tail) = self.0.split_at(len);
+        self.0 = tail;
+        PeRead(head)
+    }
+
+    fn read_relocation(&mut self, page_rva: u32) -> Result<Relocation, Error> {
+        let entry = self.read_u16();
+        let offset = entry & 0x0FFF;
+        let ty = match (entry & 0xF000) >> 12 {
+            0 => RelocationType::Absolute,
+            1 => RelocationType::High,
+            2 => RelocationType::Low,
+            3 => RelocationType::HighLow,
+            10 => RelocationType::Dir64,
+            x => return Err(Error::UnsupportedRelocation(x)),
+        };
+        Ok(Relocation {
+            rva: page_rva + offset as u32,
+            relocation_type: ty,
+        })
+    }
+}
+
+fn find_relocations(
+    pe: &Pe,
+    rva: &RVA<[u8]>,
+    len: u32,
+) -> Result<Vec<Relocation>, Error> {
+    let mut ret = Vec::new();
+
+    let input_span = Span::new(rva.get() as u64, len);
+
+    for s in pe.get_sections() {
+        if s.name.as_os_str().to_str() != Some(".reloc") {
+            continue;
+        }
+        let mut data = PeRead(pe.ref_slice_at(s.virtual_address, s.virtual_size)?);
+        while !data.is_empty() {
+            let page_rva = data.read_u32();
+            let block_size = data.read_u32();
+            if block_size < 8 {
+                // Odd -- should be a minimum of 8 -- but deal with it.
+                break;
+            }
+            let mut relocations = data.read_block(block_size as usize - 8);
+            if !input_span.intersects(Span::new(page_rva as u64, 0x1000)) {
+                continue;
+            }
+            while !relocations.is_empty() {
+                let relocation = relocations.read_relocation(page_rva)?;
+                if input_span.intersects(relocation.span()) {
+                    ret.push(relocation);
+                }
+            }
+        }
+    }
+
+    Ok(ret)
 }
 
 fn run(
@@ -291,7 +419,23 @@ fn run(
         // Get the bytes from the binary.
         let pe = Pe::new(&code_file.data)?;
         let rva = make_rva(offset - module_base);
-        let code_file_bytes = pe.ref_slice_at(rva, len).unwrap();
+        let code_file_bytes = pe.ref_slice_at(rva, len)?;
+
+        // Find all the base relocations that intersect with the bytes of
+        // interest.
+        let mut relocated_bytes = Vec::new();
+        for relocation in find_relocations(&pe, &rva, len)? {
+            for i in 0..relocation.relocation_type.len() {
+                relocated_bytes.push(
+                    relocation.rva as isize -
+                    (offset as isize - module_base as isize) +
+                    i as isize
+                );
+            }
+        }
+        relocated_bytes.sort();
+
+        let mut relocated_byte_index = 0;
 
         // Compare the bytes to find spans of mismatches.
         for (i, (a, b)) in memory_bytes
@@ -300,6 +444,22 @@ fn run(
             .enumerate()
         {
             if a != b {
+                // Skip over any relocations we're past.
+                let mut relocated_byte;
+                loop {
+                    relocated_byte = relocated_bytes.get(relocated_byte_index);
+                    if relocated_byte.map_or(true, |j| i as isize <= *j) {
+                        break;
+                    }
+                    relocated_byte_index += 1;
+                }
+
+                // If we're inside a relocation, don't report an error.
+                if relocated_byte == Some(&(i as isize)) {
+                    continue;
+                }
+
+                // Otherwise, report the error.
                 let offset = offset + i as u64;
                 if errors
                     .last()

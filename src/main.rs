@@ -419,6 +419,32 @@ fn run(
         // Get the bytes from the binary.
         let pe = Pe::new(&code_file.data)?;
         let rva = make_rva(offset - module_base);
+
+        // But first check that the bytes are all in the .text section.  That's
+        // the most useful one to check, and we want to avoid checking sections
+        // like .data.
+        let section = pe
+            .get_sections()
+            .iter()
+            .find(|s| {
+                rva > s.virtual_address &&
+                (rva + len) <= (s.virtual_address + s.virtual_size)
+            });
+
+        match section {
+            None => {
+                eprintln!("info: skipping bytes not corresponding to any PE section");
+                continue;
+            }
+            Some(s) => {
+                let name = s.name.as_os_str().to_str().unwrap_or("unknown");
+                if name != ".text" {
+                    eprintln!("info: skipping bytes in {} section", name);
+                    continue;
+                }
+            }
+        }
+
         let code_file_bytes = pe.ref_slice_at(rva, len)?;
 
         // Find all the base relocations that intersect with the bytes of

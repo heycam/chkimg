@@ -186,7 +186,7 @@ impl<'a> SymbolCache<'a> {
             .map_err(Error::NetworkFailure)?;
 
          match response.status() {
-            StatusCode::Ok => {
+            StatusCode::OK => {
                 eprintln!("info: fetching {} from {}...", code_file, url);
                 let mut buffer = vec![];
                 return client
@@ -215,7 +215,7 @@ impl<'a> SymbolCache<'a> {
             .map_err(Error::NetworkFailure)?;
 
         match response.status() {
-            StatusCode::Ok => {
+            StatusCode::OK => {
                 eprintln!("info: fetching {} from {}...", compressed_code_file, url);
                 let mut compressed_buffer = vec![];
                 let mut buffer = vec![];
